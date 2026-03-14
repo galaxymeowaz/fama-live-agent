@@ -1,4 +1,43 @@
-.env
+# === Python ===
 __pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+
+# === Virtual Environments ===
 venv/
-*.json
+.venv/
+env/
+.env/
+
+# === Secrets — NEVER commit these ===
+.env
+*.env
+*.key
+*.pem
+
+# === Databases ===
+*.sqlite3
+*.db
+
+# === IDE / OS ===
+.idea/
+.vscode/
+*.DS_Store
+Thumbs.db
+
+# === Build / Distribution ===
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# === Logs ===
+*.log
+
+# === Terraform State (contains sensitive infra data) ===
+*.tfstate
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl

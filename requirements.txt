@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+websockets
+python-dotenv
+google-genai
+Pillow
+python-multipart
+aiofiles
