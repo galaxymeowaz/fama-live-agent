@@ -116,3 +116,35 @@
 * **Challenge 29: Screen Estate Optimization (The "Agent Chat" Problem)**
   * *Problem:* Single-line inputs felt cramped for complex architectural or retail layout prompts.
   * *Solution:* Transitioned the Agent Chat input to an auto-resizing `textarea` with a 4-row initial height. Aligned action buttons (Mic/Send) vertically to maintain a clean, high-density dashboard aesthetic.
+
+* **Challenge 30: AI Mock Eradication & Live SDK Injection**
+  * *Problem:* Initial development relied on hardcoded mock responses ("Blueprint generation complete for free tier") to protect FinOps quotas during UI testing, which prevented actual AI inference.
+  * *Solution:* Executed a surgical live injection. Ripped out the mock dictionaries and wired the FastAPI backend directly to the `google-genai` SDK to process live user prompts and image data.
+
+* **Challenge 31: FinOps "Limit: 0" Anti-Abuse Wall (429 Error)**
+  * *Problem:* Provisioning a fresh Google account to reset API quotas resulted in immediate `429 RESOURCE_EXHAUSTED` errors despite zero usage. Google's infrastructure hardcodes a "0" limit to unverified accounts to prevent bot-net abuse.
+  * *Solution:* Attached a verified billing profile to lift the anti-abuse lock. Leveraged the Google Cloud "Free Trial" state, which places a hard FinOps lock on the account, mathematically guaranteeing $0.00 spend while allowing full access to the 1,500 RPD free tier.
+
+* **Challenge 32: API Model Deprecation & Version Control (404 Error)**
+  * *Problem:* The original backend architecture targeted `gemini-2.0-flash`. Google infrastructure deprecated this exact string for newly generated API keys, causing sudden `404 NOT_FOUND` network drops on the new DevSecOps account.
+  * *Solution:* Updated the infrastructure routing to point to the active `gemini-2.5-flash` model endpoint, instantly restoring connectivity and future-proofing the application.
+
+* **Challenge 33: Unpredictable AI Formatting & Affiliate Generation**
+  * *Problem:* Standard text prompting resulted in hallucinated outputs and "random words" instead of the strict formatting required for the B2B 3-tier (Good/Better/Best) Shopee affiliate monetization structure.
+  * *Solution:* Implemented Strict JSON Schema enforcement using `pydantic`. By passing a rigidly defined `SpaceBlueprint` schema to the `response_schema` config in the Gemini 2.5 SDK, the AI is mathematically forced to return exact, parsable product names, descriptions, prices, and URLs for seamless UI rendering.
+  
+* **Challenge 34: SDK Strict Typing & Keyword-Only Enforcement**
+  * *Problem:* The `google-genai` SDK transitioned to strict Pydantic-based keyword-only arguments, causing a fatal `TypeError` when passing raw audio bytes or system instructions as positional arguments.
+  * *Solution:* Refactored the `send_realtime_input` and `from_text` methods to explicitly use named parameters (`media=` and `text=`). This eliminated positional ambiguity and satisfied the SDK’s validation layer.
+
+* **Challenge 35: API Model Fragmentation (AI Studio vs. Vertex AI)**
+  * *Problem:* Attempting to use production model strings like `imagen-3.0-generate-001` or `gemini-2.0-flash` for Live API/Image generation resulted in `404 NOT_FOUND` and `1008 bidiGenerateContent` errors.
+  * *Solution:* Identified that free-tier API keys are routed through different infrastructure than paid Vertex AI accounts. Pivoted the Live Agent to the `gemini-2.5-flash-native-audio-preview-12-2025` endpoint and transitioned image generation to the native `gemini-2.5-flash-image` model via `generate_content`.
+
+* **Challenge 36: Decoupling UI Sequential Gating (Parallel Entry UX)**
+  * *Problem:* Residual frontend logic ("Ghost Locks") forced users to activate their webcam before accessing the Live Agent or Blueprint Generator, creating a massive conversion friction point.
+  * *Solution:* Re-engineered the frontend `index.html` to decouple camera state from input state. Implemented a shared WebSocket connection logic that allows the 🎤 Mic and Generate buttons to function independently, using the camera only as an optional context enhancement.
+
+* **Challenge 37: ASGI Application Crashes via WebSocket Handling**
+  * *Problem:* Severe backend crashes occurred during full-duplex streaming because the server attempted to process positional lists where the Gemini session expected individual binary blobs.
+  * *Solution:* Transitioned from list-wrapped parts `[...]` to the direct `types.Blob` schema for audio streaming. This optimized the memory footprint and prevented the ASGI server from terminating the process under high-frequency audio packet loads.
