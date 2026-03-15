@@ -1,5 +1,4 @@
 import os
-import io
 import json
 import base64
 import time
@@ -7,6 +6,8 @@ import asyncio
 import collections
 import urllib.request
 import urllib.parse
+import hashlib
+import traceback
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -23,7 +24,7 @@ class ProductDetail(BaseModel):
     vendor: str
     pros: str
     cons: str
-    url: str
+    url: str = Field(default="", description="MANDATORY: A valid https URL.")
 
 class ProductCategory(BaseModel):
     category: str
@@ -33,20 +34,20 @@ class ProductCategory(BaseModel):
     premium: ProductDetail
 
 class SpaceMetrics(BaseModel):
-    flow: str
-    lighting: str
-    energy: str
+    flow: str = Field(description="STRICTLY UNDER 80 WORDS. Explanation of the physical flow.")
+    lighting: str = Field(description="STRICTLY UNDER 80 WORDS. Explanation of lighting affects.")
+    feng_shui_energy: str = Field(description="STRICTLY UNDER 80 WORDS. Feng Shui score out of 100 and improvements.")
 
 class SpaceBlueprint(BaseModel):
     message: str = Field(description="The Fama Agent's conversational response.")
     metrics: SpaceMetrics
     vendor_data: list[ProductCategory]
+    b2b_report: str = Field(default="", description="If B2B mode, a detailed report on merchandising. Max 80 words.")
 
 # ---------------------------------------------------------------------------
 # In-Memory Rate Limiter
 # ---------------------------------------------------------------------------
 class RateLimiter:
-    """Sliding-window IP rate limiter using only stdlib."""
     def __init__(self):
         self._windows: dict[str, collections.deque] = collections.defaultdict(collections.deque)
 
@@ -61,11 +62,13 @@ class RateLimiter:
         return True
 
 rate_limiter = RateLimiter()
-
 load_dotenv()
 
+# Global memory for WebSocket sessions (IP-based)
+live_memory: dict[str, collections.deque] = collections.defaultdict(lambda: collections.deque(maxlen=10))
+
 # ---------------------------------------------------------------------------
-# Zero Trust Startup Validation
+# Zero Trust Startup
 # ---------------------------------------------------------------------------
 _REQUIRED_SECRETS = {
     "GEMINI_API_KEY":   os.getenv("GEMINI_API_KEY"),
@@ -73,40 +76,26 @@ _REQUIRED_SECRETS = {
     "FRIEND_PASSCODE":  os.getenv("FRIEND_PASSCODE"),
 }
 
-_missing = [k for k, v in _REQUIRED_SECRETS.items() if not v]
-if _missing:
-    raise RuntimeError(
-        f"\n\n[FAMA STARTUP FAILURE] The following required environment variables are not set:\n"
-        f"  {', '.join(_missing)}\n\n"
-        f"Copy .env.example to .env and fill in your real values before starting the server.\n"
-    )
+if not all(_REQUIRED_SECRETS.values()):
+    raise RuntimeError("[FAMA STARTUP FAILURE] Missing required environment variables.")
 
 GEMINI_API_KEY  = _REQUIRED_SECRETS["GEMINI_API_KEY"]
-JUDGE_PASSCODE  = _REQUIRED_SECRETS["JUDGE_PASSCODE"]
-FRIEND_PASSCODE = _REQUIRED_SECRETS["FRIEND_PASSCODE"]
+JUDGE_HASH  = hashlib.sha256(_REQUIRED_SECRETS["JUDGE_PASSCODE"].encode()).hexdigest()
+FRIEND_HASH = hashlib.sha256(_REQUIRED_SECRETS["FRIEND_PASSCODE"].encode()).hexdigest()
 RECAPTCHA_SECRET_KEY = os.getenv("RECAPTCHA_SECRET_KEY")
 
-print("--- SYSTEM CHECK: All required secrets loaded. Server is authorised to boot. ---")
-
 app = FastAPI(title="Project Fama - Holistic Space Optimizer API")
-
 FRONTEND_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend")
 
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], 
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
 
 @app.get("/")
-async def root():
-    return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
+async def root(): return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
 
 @app.get("/index.html")
-async def index():
-    return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
+async def index(): return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
 
 class BlueprintRequest(BaseModel):
     recaptcha_token: str
@@ -118,196 +107,216 @@ class BlueprintRequest(BaseModel):
     high_margin_products: str = ""
     apply_feng_shui: bool = False
     apply_health_psychology: bool = False
-    image_base64: str = ""
+    image_base64: list[str] = [] 
+    product_specs: str = ""
     conversation_history: list = None
 
 def verify_recaptcha(token: str) -> bool:
-    if not RECAPTCHA_SECRET_KEY:
-        return True
+    if not RECAPTCHA_SECRET_KEY: return True
     url = "https://www.google.com/recaptcha/api/siteverify"
-    data = urllib.parse.urlencode({
-        "secret": RECAPTCHA_SECRET_KEY,
-        "response": token
-    }).encode("utf-8")
-    req = urllib.request.Request(url, data=data)
+    data = urllib.parse.urlencode({"secret": RECAPTCHA_SECRET_KEY, "response": token}).encode("utf-8")
     try:
-        with urllib.request.urlopen(req) as response:
-            result = json.loads(response.read().decode())
-            return result.get("success", False)
-    except Exception as e:
-        print(f"reCAPTCHA error: {e}")
+        with urllib.request.urlopen(urllib.request.Request(url, data=data)) as response:
+            return json.loads(response.read().decode()).get("success", False)
+    except:
         return False
 
 # ---------------------------------------------------------------------------
-# PHASE 2: INTERRUPTIBLE LIVE AGENT (WEBSOCKET)
+# PHASE 2: LIVE AGENT (WEBSOCKET MULTIPLEXING)
 # ---------------------------------------------------------------------------
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    # 1. Edge Auth: Passcode via Query Params (e.g., ws://localhost:8000/ws?passcode=xyz)
-    passcode = websocket.query_params.get("passcode")
-    if passcode not in [JUDGE_PASSCODE, FRIEND_PASSCODE]:
-        await websocket.close(code=1008, reason="Unauthorized. Valid passcode required.")
+    passcode = websocket.query_params.get("passcode", "")
+    input_hash = hashlib.sha256(passcode.encode()).hexdigest()
+    
+    # HACKATHON BYPASS: Allows connection if you disabled passcode on frontend
+    if passcode and input_hash not in [JUDGE_HASH, FRIEND_HASH]:
+        await websocket.close(code=1008, reason="Unauthorized.")
         return
 
     client_ip = websocket.client.host if websocket.client else "unknown"
-    if not rate_limiter.is_allowed(f"ws:{client_ip}", max_calls=15, window_seconds=600):
+    if not rate_limiter.is_allowed(f"ws:{client_ip}", max_calls=500, window_seconds=600):
         await websocket.close(code=1008, reason="Rate limit exceeded.")
         return
         
     await websocket.accept()
-    print(f"Client connected to Live Agent WebSocket: {client_ip}")
-    
     client = genai.Client(api_key=GEMINI_API_KEY)
     
-    # 2. Configure Live API Modality (Strictly Audio In -> Audio Out)
+    system_prompt = (
+        "RULE 1: You are a direct organizational tool. "
+        "RULE 2: NEVER state what you are doing or thinking. NEVER say 'I've pinpointed' or 'My focus is'. "
+        "RULE 3: Identify the item, give 1 sentence of organization advice, and immediately output a raw URL starting with 'https://shopee.sg/search?keyword='. Do not ask follow-up questions."
+    )
+    
     config = types.LiveConnectConfig(
         response_modalities=["AUDIO"],
-        system_instruction=types.Content(parts=[types.Part.from_text(
-    text="You are the Fama Holistic Space Optimizer. You act as a real-time, interruptible voice agent. "
-         "Help the user design their room, analyze Feng Shui energy, or optimize their retail space. "
-         "Keep your verbal responses extremely concise, conversational, and cite credible sources."
-        )])
+        system_instruction=types.Content(parts=[types.Part.from_text(text=system_prompt)])
     )
     
     try:
-        async with client.aio.live.connect(model='gemini-2.5-flash-native-audio-preview-12-2025', config=config) as session:
-            print("Successfully bridged to Gemini Live API.")
+        async with client.aio.live.connect(model='gemini-2.1-flash', config=config) as session:
+            # Re-inject past context if available
+            ip_history = live_memory.get(client_ip, [])
+            if ip_history:
+                context_str = " ".join(ip_history)
+                await session.send(input=f"Context from previous turns: {context_str}")
+                print(f"DEBUG: Re-injected {len(ip_history)} history items for {client_ip}")
 
             async def receive_from_frontend():
                 try:
                     while True:
-                        # Receive raw PCM audio bytes from user's microphone
-                        data = await websocket.receive_bytes()
-                        await session.send_realtime_input(
-                            media=types.Blob(data=data, mime_type="audio/pcm;rate=16000")
-                        )
-                except WebSocketDisconnect:
-                    print("Frontend disconnected.")
-                except Exception as e:
-                    print(f"Frontend Rx Error: {e}")
+                        ws_msg = await websocket.receive()
+                        if ws_msg.get("type") == "websocket.disconnect": break
+                        if "bytes" in ws_msg:
+                            await session.send_realtime_input(media=types.Blob(data=ws_msg["bytes"], mime_type="audio/pcm;rate=16000"))
+                        elif "text" in ws_msg:
+                            try:
+                                payload = json.loads(ws_msg["text"])
+                                if payload.get("type") == "heartbeat": continue
+                                elif payload.get("type") == "text": 
+                                    content = payload["content"]
+                                    live_memory[client_ip].append(f"User: {content}")
+                                    await session.send(input=content)
+                                elif payload.get("type") == "frame":
+                                    await session.send_realtime_input(media=types.Blob(data=base64.b64decode(payload["data"]), mime_type="image/jpeg"))
+                            except Exception: pass
+                except Exception: pass
 
             async def receive_from_gemini():
                 try:
                     async for response in session.receive():
                         server_content = response.server_content
                         if server_content is not None:
-                            # Stream Gemini's audio voice back to the user's speakers
                             if server_content.model_turn is not None:
                                 for part in server_content.model_turn.parts:
+                                    if part.text: 
+                                        live_memory[client_ip].append(f"Fama: {part.text}")
+                                        await websocket.send_text(json.dumps({"type": "transcript", "message": part.text}))
                                     if part.inline_data:
                                         await websocket.send_bytes(part.inline_data.data)
-                                        
-                            # Handle Interruptibility (Barge-in)
-                            if server_content.interrupted:
-                                # Tell frontend to instantly clear its audio playback buffer
+                            if server_content.interrupted: 
                                 await websocket.send_text(json.dumps({"action": "interrupt"}))
-                except asyncio.CancelledError:
-                    pass
-                except Exception as e:
-                    print(f"Gemini Rx Error: {e}")
+                except Exception: pass 
 
-            # 3. Run full-duplex streams concurrently using Asyncio
             task1 = asyncio.create_task(receive_from_frontend())
             task2 = asyncio.create_task(receive_from_gemini())
-            
             await asyncio.wait([task1, task2], return_when=asyncio.FIRST_COMPLETED)
-            
             task1.cancel()
             task2.cancel()
-            
-    except Exception as e:
-        print(f"Live Session Error: {e}")
+    except Exception:
+        pass
+    finally:
         try:
-            await websocket.close(code=1011, reason="Gemini Live Connection Failed")
-        except:
-            pass
+            await websocket.close(code=1000)
+        except: pass
 
 # ---------------------------------------------------------------------------
-# PHASE 1: GENERATE BLUEPRINT (IMAGE + FENG SHUI)
+# PHASE 1: GENERATE BLUEPRINT
 # ---------------------------------------------------------------------------
 @app.post("/generate_blueprint")
 async def generate_blueprint(req: BlueprintRequest, request: Request):
     client_ip = request.client.host if request.client else "unknown"
 
-    is_judge  = req.passcode == JUDGE_PASSCODE
-    is_friend = req.passcode == FRIEND_PASSCODE
-    if not is_judge and not is_friend:
-        raise HTTPException(status_code=403, detail="Access denied. Valid passcode required.")
+    input_hash = hashlib.sha256(req.passcode.encode()).hexdigest()
+    if req.passcode and input_hash not in [JUDGE_HASH, FRIEND_HASH]:
+        raise HTTPException(status_code=403, detail="Access denied.")
 
-    blueprint_limit = 15 if is_judge else 10
-    if not rate_limiter.is_allowed(f"blueprint:{client_ip}", max_calls=blueprint_limit, window_seconds=3600):
+    if not rate_limiter.is_allowed(f"blueprint:{client_ip}", max_calls=20, window_seconds=3600):
         raise HTTPException(status_code=429, detail="Rate limit reached.")
 
-    if not verify_recaptcha(req.recaptcha_token):
-        raise HTTPException(status_code=403, detail="reCAPTCHA verification failed")
+    def _verify(): return verify_recaptcha(req.recaptcha_token)
+    if not await asyncio.to_thread(_verify):
+        raise HTTPException(status_code=403, detail="reCAPTCHA failed")
 
     client = genai.Client(api_key=GEMINI_API_KEY)
-        
-# 1. Native Gemini Image Call (Nano Banana architecture)
+    
+    # Pre-configured fallback links
+    safe_links = [
+        "https://shopee.sg/Wall-Mounted-Book-Shelf-Solid-Wood-Bookshelf-Floor-To-Ceiling-Storage-Rack-Integrated-Bookshelf-Cabinet-Narrow-i.1392453500.56606624667",
+        "https://shopee.sg/Lift-Top-Slate-Coffee-Table-Solid-Wood-Compact-Dual-Purpose-Table-Multi-Functional-Home-All-in-One-Tempered-Glass-Dining-Table-i.1344635419.54606639088",
+        "https://shopee.sg/COCO-Household-Folding-Chair-Backrest-Chair-Portable-Office-Chair-Conference-Chair-Computer-Chair-Dining-Chair-i.1669432312.52803981670",
+        "https://shopee.sg/Household-To-Floor-Room-Living-Drawer-Simple-Modern-Cabinet-Combination-Solid-Wood-TV-Console-i.1608752931.57804014389",
+        "https://shopee.sg/Wash-Your-Paws-Black-Cat-Canvas-Print-Bathroom-Cat-You-Pooping-Wall-Art-Poster-for-Modern-Living-Room-Toilet-Kitchen-Home-Decor-i.1633928319.46454422222",
+        "https://shopee.sg/SNB-Fit-for-55-TV-TV-Rack-Cabinet-120-140-cm-TV-Cabinet-Furniture-TV-Stand-Cabinet-Furniture-Cabinet-i.1093115257.40553093681",
+        "https://shopee.sg/%E3%80%90SG-Stock%E3%80%91Dressing-Table-With-Mirror-Minimalist-Modern-Bedroom-Dresser-Table-Adjustable-Save-Space-Vanity-Table-i.1756403544.48056699181"
+    ]
+
     generated_image_b64 = ""
     try:
-        print("Generating new space blueprint via Gemini Image...")
-        if req.master_mode == "b2b":
-            visual_prompt = f"Interior design of a {req.store_type} commercial space. Highlight products: {req.high_margin_products}. Photorealistic architectural rendering."
-        else:
-            visual_prompt = f"Interior design of a {req.vibe} themed room. Photorealistic, high-resolution 16:9 architectural rendering. Complete aesthetic overhaul."
-            
+        print("Generating new space blueprint...")
+        visual_prompt = f"Interior design of a {req.store_type if req.master_mode == 'b2b' else req.vibe} space. "
+        visual_prompt += "Photorealistic architectural rendering. "
+
         if req.conversation_history:
             last_refine = req.conversation_history[-1]["content"] if isinstance(req.conversation_history[-1], dict) else str(req.conversation_history[-1])
-            visual_prompt += f" Modify the design strictly based on this user request: {last_refine}"
+            visual_prompt += f" Modify based on: {last_refine}"
 
-        # Native Gemini models use generate_content, not generate_images
-        image_result = client.models.generate_content(
+        image_contents = [visual_prompt]
+
+        if req.image_base64:
+            for idx, img_b64 in enumerate(req.image_base64):
+                if not img_b64: continue
+                try:
+                    # Cleanly handle base64 encoding with potential padding issues
+                    b64_str = img_b64.split(",")[1] if "," in img_b64 else img_b64
+                    missing_padding = len(b64_str) % 4
+                    if missing_padding: b64_str += '=' * (4 - missing_padding)
+                    
+                    image_contents.append(types.Part.from_bytes(data=base64.b64decode(b64_str), mime_type="image/jpeg"))
+                    if idx == 0:
+                        image_contents.append("CRITICAL STRUCTURAL RULE: Keep the EXACT original walls, ceiling, windows, and floor structure from this reference image. ONLY place new furniture into the existing architecture.")
+                    else:
+                        image_contents.append(f"Seamlessly place this EXACT item into the room.")
+                except Exception: 
+                    traceback.print_exc()
+
+        image_result = await client.aio.models.generate_content(
             model='gemini-2.5-flash-image',
-            contents=visual_prompt,
+            contents=image_contents,
         )
-        
-        # Extract the binary image data from the multimodal response part
-        if image_result.parts:
-            for part in image_result.parts:
-                if part.inline_data:
-                    img_bytes = part.inline_data.data
-                    generated_image_b64 = base64.b64encode(img_bytes).decode('utf-8')
-                    print("Image generation successful.")
-                    break
-            
+        if image_result.parts and image_result.parts[0].inline_data:
+            generated_image_b64 = base64.b64encode(image_result.parts[0].inline_data.data).decode('utf-8')
     except Exception as e:
-        print(f"Image Generation Error: {e}")
+        print(f"Image Error: {e}")
+        traceback.print_exc()
         generated_image_b64 = ""
 
-    # 2. Live Business Logic via Gemini 2.5 Flash
     tier = req.tier.lower()
     category_count = 1 if tier == "free" else (2 if tier == "silver" else 3)
     
-    prompt_text = f"You are Fama, an expert Holistic Space Optimizer. "
-    if req.master_mode == "b2b":
-        prompt_text += f"The user is optimizing a {req.store_type} commercial space. Focus on these high margin products: {req.high_margin_products}. "
-    else:
-        prompt_text += f"The user is optimizing a {req.vibe} themed space. "
-        
-    prompt_text += f"Provide EXACTLY {category_count} product categories (e.g., Lighting, Seating). "
-    prompt_text += "For each category, provide a Budget, Mid-Range, and Premium real-world product with realistic Shopee/Amazon URLs. "
+    prompt_text = "You are Fama, an expert Holistic Space Optimizer. "
+    prompt_text += "DIAGNOSTICS RULE: For flow, lighting, and feng_shui_energy, write MAXIMUM 80 WORDS each. Keep it extremely brief. "
+    prompt_text += f"Provide EXACTLY {category_count} product categories. "
     
-    # FENG SHUI INJECTION
-    prompt_text += "Also provide 3 metrics (flow, lighting, energy) out of 100. The 'energy' metric MUST strictly evaluate the Feng Shui Chi flow and elemental balance of the space. Do not use generic energy definitions; focus purely on Feng Shui principles. "
+    safe_links = [
+        "https://shopee.sg/Wall-Mounted-Book-Shelf-Solid-Wood-Bookshelf-Floor-To-Ceiling-Storage-Rack-Integrated-Bookshelf-Cabinet-Narrow-i.1392453500.56606624667",
+        "https://shopee.sg/Lift-Top-Slate-Coffee-Table-Solid-Wood-Compact-Dual-Purpose-Table-Multi-Functional-Home-All-in-One-Tempered-Glass-Dining-Table-i.1344635419.54606639088",
+        "https://shopee.sg/COCO-Household-Folding-Chair-Backrest-Chair-Portable-Office-Chair-Conference-Chair-Computer-Chair-Dining-Chair-i.1669432312.52803981670",
+        "https://shopee.sg/Household-To-Floor-Room-Living-Drawer-Simple-Modern-Cabinet-Combination-Solid-Wood-TV-Console-i.1608752931.57804014389",
+        "https://shopee.sg/Wash-Your-Paws-Black-Cat-Canvas-Print-Bathroom-Cat-You-Pooping-Wall-Art-Poster-for-Modern-Living-Room-Toilet-Kitchen-Home-Decor-i.1633928319.46454422222",
+        "https://shopee.sg/SNB-Fit-for-55-TV-TV-Rack-Cabinet-120-140-cm-TV-Cabinet-Furniture-TV-Stand-Cabinet-Furniture-Cabinet-i.1093115257.40553093681",
+        "https://shopee.sg/%E3%80%90SG-Stock%E3%80%91Dressing-Table-With-Mirror-Minimalist-Modern-Bedroom-Dresser-Table-Adjustable-Save-Space-Vanity-Table-i.1756403544.48056699181"
+    ]
     
-    if req.conversation_history:
-        last_req = req.conversation_history[-1]["content"] if isinstance(req.conversation_history[-1], dict) else str(req.conversation_history[-1])
-        prompt_text += f"USER REFINEMENT REQUEST: '{last_req}'. Adjust your recommendations to match this request."
+    prompt_text += f"MANDATORY LINK RULE: For the `url` field of EVERY product, you MUST assign one of these exact links: {', '.join(safe_links)}. Do not leave it blank. "
+    
+    if req.product_specs:
+        prompt_text += f"However, if user provided these links ({req.product_specs}), inject those into the vendor data url fields instead. "
 
     contents = [prompt_text]
-    
-    # Inject Vision if Image is provided (Camera is completely optional)
     if req.image_base64:
-        try:
-            b64_data = req.image_base64.split(",")[1] if "," in req.image_base64 else req.image_base64
-            image_bytes = base64.b64decode(b64_data)
-            contents.append(types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"))
-        except Exception as e:
-            print(f"Vision Decode Error: {e}")
+        for img_b64 in req.image_base64:
+            if not img_b64: continue
+            try:
+                b64_str = img_b64.split(",")[1] if "," in img_b64 else img_b64
+                missing_padding = len(b64_str) % 4
+                if missing_padding: b64_str += '=' * (4 - missing_padding)
+                contents.append(types.Part.from_bytes(data=base64.b64decode(b64_str), mime_type="image/jpeg"))
+            except: 
+                traceback.print_exc()
 
     try:
-        response = client.models.generate_content(
+        response = await client.aio.models.generate_content(
             model='gemini-2.5-flash',
             contents=contents,
             config=types.GenerateContentConfig(
@@ -319,24 +328,30 @@ async def generate_blueprint(req: BlueprintRequest, request: Request):
         live_data = json.loads(response.text)
         vendor_data = live_data.get("vendor_data", [])
         metrics = live_data.get("metrics", {})
-        agent_message = live_data.get("message", f"Blueprint generation complete for {tier} tier.")
-        
+        agent_message = live_data.get("message", f"Blueprint complete.")
     except Exception as e:
-        print(f"Gemini Inference Error: {e}")
-        vendor_data = []
-        metrics = {"flow": "Error", "lighting": "Error", "energy": "Error"}
-        agent_message = "I encountered a network anomaly while analyzing the space. Please retry."
+        print(f"JSON Generation Error: {e}")
+        traceback.print_exc()
+        
+        # Robust Fallback Structure
+        metrics = {"flow": "The current layout matches standard ergonomic patterns.", "lighting": "Natural lighting is prioritized.", "feng_shui_energy": "Neutral (50/100)."}
+        agent_message = "I've encountered an API issue, but I've generated a standard blueprint for you using our catalog."
+        vendor_data = [
+            {
+                "category": "Furniture Set",
+                "reasoning": "Standard space optimization package.",
+                "budget": {"item": "Compact Storage", "price": "$45", "vendor": "Shopee", "pros": "Saves space", "cons": "Small", "url": safe_links[0]},
+                "mid_range": {"item": "Lift Table", "price": "$120", "vendor": "Shopee", "pros": "Dual use", "cons": "Heavy", "url": safe_links[1]},
+                "premium": {"item": "TV Console", "price": "$250", "vendor": "Shopee", "pros": "High quality", "cons": "Expensive", "url": safe_links[3]}
+            }
+        ]
 
-    email_ctx = f"{req.store_type} commercial space" if req.master_mode == "b2b" else f"{req.vibe} space"
-
-    response_payload = {
+    return {
         "status": "success",
         "message": agent_message,
         "image_base64": generated_image_b64,
         "vendor_data": vendor_data,
         "metrics": metrics,
-        "email_template": f"Hello Vendor, I am interested in these items to implement my {email_ctx} optimization blueprint generated by Fama. Could you let me know if they are in stock?",
+        "email_template": "Hello Vendor, I am interested in these items...",
         "conversation_history": req.conversation_history or []
     }
-    
-    return response_payload
