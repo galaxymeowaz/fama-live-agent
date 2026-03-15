@@ -113,7 +113,7 @@ class BlueprintRequest(BaseModel):
 
 def verify_recaptcha(token: str) -> bool:
     if not RECAPTCHA_SECRET_KEY: return True
-    url = "https://www.google.com/recaptcha/api/siteverify"
+    url = "[https://www.google.com/recaptcha/api/siteverify](https://www.google.com/recaptcha/api/siteverify)"
     data = urllib.parse.urlencode({"secret": RECAPTCHA_SECRET_KEY, "response": token}).encode("utf-8")
     try:
         with urllib.request.urlopen(urllib.request.Request(url, data=data)) as response:
@@ -143,9 +143,9 @@ async def websocket_endpoint(websocket: WebSocket):
     client = genai.Client(api_key=GEMINI_API_KEY)
     
     system_prompt = (
-        "RULE 1: You are a direct organizational tool. "
-        "RULE 2: NEVER state what you are doing or thinking. NEVER say 'I've pinpointed' or 'My focus is'. "
-        "RULE 3: Identify the item, give 1 sentence of organization advice, and immediately output a raw URL starting with 'https://shopee.sg/search?keyword='. Do not ask follow-up questions."
+        "RULE 1: You are Fama, a direct organizational tool and holistic space expert. "
+        "RULE 2: NEVER state what you are doing or thinking. NEVER say 'I've pinpointed', 'My focus is', or use markdown like asterisks (**). "
+        "RULE 3: If the user shows an item, identify it, give 1 sentence of organization advice, and immediately output a raw URL starting with '[https://shopee.sg/search?keyword=](https://shopee.sg/search?keyword=)'. Do not ask follow-up questions."
     )
     
     config = types.LiveConnectConfig(
@@ -154,13 +154,12 @@ async def websocket_endpoint(websocket: WebSocket):
     )
     
     try:
-        async with client.aio.live.connect(model='gemini-2.1-flash', config=config) as session:
+        async with client.aio.live.connect(model='gemini-2.5-flash-native-audio-preview-12-2025', config=config) as session:
             # Re-inject past context if available
             ip_history = live_memory.get(client_ip, [])
             if ip_history:
                 context_str = " ".join(ip_history)
                 await session.send(input=f"Context from previous turns: {context_str}")
-                print(f"DEBUG: Re-injected {len(ip_history)} history items for {client_ip}")
 
             async def receive_from_frontend():
                 try:
@@ -216,29 +215,33 @@ async def websocket_endpoint(websocket: WebSocket):
 @app.post("/generate_blueprint")
 async def generate_blueprint(req: BlueprintRequest, request: Request):
     client_ip = request.client.host if request.client else "unknown"
+    is_localhost = client_ip in ["127.0.0.1", "::1", "localhost"]
 
+    # HACKATHON BYPASS: If running locally, bypass security to ensure demo works
     input_hash = hashlib.sha256(req.passcode.encode()).hexdigest()
-    if req.passcode and input_hash not in [JUDGE_HASH, FRIEND_HASH]:
+    if not is_localhost and req.passcode and input_hash not in [JUDGE_HASH, FRIEND_HASH]:
+        print(f"403 Forbidden: Invalid passcode from {client_ip}")
         raise HTTPException(status_code=403, detail="Access denied.")
 
-    if not rate_limiter.is_allowed(f"blueprint:{client_ip}", max_calls=20, window_seconds=3600):
+    if not is_localhost and not rate_limiter.is_allowed(f"blueprint:{client_ip}", max_calls=20, window_seconds=3600):
         raise HTTPException(status_code=429, detail="Rate limit reached.")
 
     def _verify(): return verify_recaptcha(req.recaptcha_token)
-    if not await asyncio.to_thread(_verify):
+    if not is_localhost and not await asyncio.to_thread(_verify):
+        print(f"403 Forbidden: reCAPTCHA failed for {client_ip}")
         raise HTTPException(status_code=403, detail="reCAPTCHA failed")
 
     client = genai.Client(api_key=GEMINI_API_KEY)
     
     # Pre-configured fallback links
     safe_links = [
-        "https://shopee.sg/Wall-Mounted-Book-Shelf-Solid-Wood-Bookshelf-Floor-To-Ceiling-Storage-Rack-Integrated-Bookshelf-Cabinet-Narrow-i.1392453500.56606624667",
-        "https://shopee.sg/Lift-Top-Slate-Coffee-Table-Solid-Wood-Compact-Dual-Purpose-Table-Multi-Functional-Home-All-in-One-Tempered-Glass-Dining-Table-i.1344635419.54606639088",
-        "https://shopee.sg/COCO-Household-Folding-Chair-Backrest-Chair-Portable-Office-Chair-Conference-Chair-Computer-Chair-Dining-Chair-i.1669432312.52803981670",
-        "https://shopee.sg/Household-To-Floor-Room-Living-Drawer-Simple-Modern-Cabinet-Combination-Solid-Wood-TV-Console-i.1608752931.57804014389",
-        "https://shopee.sg/Wash-Your-Paws-Black-Cat-Canvas-Print-Bathroom-Cat-You-Pooping-Wall-Art-Poster-for-Modern-Living-Room-Toilet-Kitchen-Home-Decor-i.1633928319.46454422222",
-        "https://shopee.sg/SNB-Fit-for-55-TV-TV-Rack-Cabinet-120-140-cm-TV-Cabinet-Furniture-TV-Stand-Cabinet-Furniture-Cabinet-i.1093115257.40553093681",
-        "https://shopee.sg/%E3%80%90SG-Stock%E3%80%91Dressing-Table-With-Mirror-Minimalist-Modern-Bedroom-Dresser-Table-Adjustable-Save-Space-Vanity-Table-i.1756403544.48056699181"
+        "[https://shopee.sg/Wall-Mounted-Book-Shelf-Solid-Wood-Bookshelf-Floor-To-Ceiling-Storage-Rack-Integrated-Bookshelf-Cabinet-Narrow-i.1392453500.56606624667](https://shopee.sg/Wall-Mounted-Book-Shelf-Solid-Wood-Bookshelf-Floor-To-Ceiling-Storage-Rack-Integrated-Bookshelf-Cabinet-Narrow-i.1392453500.56606624667)",
+        "[https://shopee.sg/Lift-Top-Slate-Coffee-Table-Solid-Wood-Compact-Dual-Purpose-Table-Multi-Functional-Home-All-in-One-Tempered-Glass-Dining-Table-i.1344635419.54606639088](https://shopee.sg/Lift-Top-Slate-Coffee-Table-Solid-Wood-Compact-Dual-Purpose-Table-Multi-Functional-Home-All-in-One-Tempered-Glass-Dining-Table-i.1344635419.54606639088)",
+        "[https://shopee.sg/COCO-Household-Folding-Chair-Backrest-Chair-Portable-Office-Chair-Conference-Chair-Computer-Chair-Dining-Chair-i.1669432312.52803981670](https://shopee.sg/COCO-Household-Folding-Chair-Backrest-Chair-Portable-Office-Chair-Conference-Chair-Computer-Chair-Dining-Chair-i.1669432312.52803981670)",
+        "[https://shopee.sg/Household-To-Floor-Room-Living-Drawer-Simple-Modern-Cabinet-Combination-Solid-Wood-TV-Console-i.1608752931.57804014389](https://shopee.sg/Household-To-Floor-Room-Living-Drawer-Simple-Modern-Cabinet-Combination-Solid-Wood-TV-Console-i.1608752931.57804014389)",
+        "[https://shopee.sg/Wash-Your-Paws-Black-Cat-Canvas-Print-Bathroom-Cat-You-Pooping-Wall-Art-Poster-for-Modern-Living-Room-Toilet-Kitchen-Home-Decor-i.1633928319.46454422222](https://shopee.sg/Wash-Your-Paws-Black-Cat-Canvas-Print-Bathroom-Cat-You-Pooping-Wall-Art-Poster-for-Modern-Living-Room-Toilet-Kitchen-Home-Decor-i.1633928319.46454422222)",
+        "[https://shopee.sg/SNB-Fit-for-55-TV-TV-Rack-Cabinet-120-140-cm-TV-Cabinet-Furniture-TV-Stand-Cabinet-Furniture-Cabinet-i.1093115257.40553093681](https://shopee.sg/SNB-Fit-for-55-TV-TV-Rack-Cabinet-120-140-cm-TV-Cabinet-Furniture-TV-Stand-Cabinet-Furniture-Cabinet-i.1093115257.40553093681)",
+        "[https://shopee.sg/%E3%80%90SG-Stock%E3%80%91Dressing-Table-With-Mirror-Minimalist-Modern-Bedroom-Dresser-Table-Adjustable-Save-Space-Vanity-Table-i.1756403544.48056699181](https://shopee.sg/%E3%80%90SG-Stock%E3%80%91Dressing-Table-With-Mirror-Minimalist-Modern-Bedroom-Dresser-Table-Adjustable-Save-Space-Vanity-Table-i.1756403544.48056699181)"
     ]
 
     generated_image_b64 = ""
@@ -266,7 +269,7 @@ async def generate_blueprint(req: BlueprintRequest, request: Request):
                     if idx == 0:
                         image_contents.append("CRITICAL STRUCTURAL RULE: Keep the EXACT original walls, ceiling, windows, and floor structure from this reference image. ONLY place new furniture into the existing architecture.")
                     else:
-                        image_contents.append(f"Seamlessly place this EXACT item into the room.")
+                        image_contents.append("CRITICAL PROPORTION RULE: Place this EXACT item into the room AT A REALISTIC, TRUE-TO-LIFE SCALE. Do not enlarge small items. Maintain proper physical proportions relative to the surrounding furniture and floor.")
                 except Exception: 
                     traceback.print_exc()
 
@@ -287,17 +290,6 @@ async def generate_blueprint(req: BlueprintRequest, request: Request):
     prompt_text = "You are Fama, an expert Holistic Space Optimizer. "
     prompt_text += "DIAGNOSTICS RULE: For flow, lighting, and feng_shui_energy, write MAXIMUM 80 WORDS each. Keep it extremely brief. "
     prompt_text += f"Provide EXACTLY {category_count} product categories. "
-    
-    safe_links = [
-        "https://shopee.sg/Wall-Mounted-Book-Shelf-Solid-Wood-Bookshelf-Floor-To-Ceiling-Storage-Rack-Integrated-Bookshelf-Cabinet-Narrow-i.1392453500.56606624667",
-        "https://shopee.sg/Lift-Top-Slate-Coffee-Table-Solid-Wood-Compact-Dual-Purpose-Table-Multi-Functional-Home-All-in-One-Tempered-Glass-Dining-Table-i.1344635419.54606639088",
-        "https://shopee.sg/COCO-Household-Folding-Chair-Backrest-Chair-Portable-Office-Chair-Conference-Chair-Computer-Chair-Dining-Chair-i.1669432312.52803981670",
-        "https://shopee.sg/Household-To-Floor-Room-Living-Drawer-Simple-Modern-Cabinet-Combination-Solid-Wood-TV-Console-i.1608752931.57804014389",
-        "https://shopee.sg/Wash-Your-Paws-Black-Cat-Canvas-Print-Bathroom-Cat-You-Pooping-Wall-Art-Poster-for-Modern-Living-Room-Toilet-Kitchen-Home-Decor-i.1633928319.46454422222",
-        "https://shopee.sg/SNB-Fit-for-55-TV-TV-Rack-Cabinet-120-140-cm-TV-Cabinet-Furniture-TV-Stand-Cabinet-Furniture-Cabinet-i.1093115257.40553093681",
-        "https://shopee.sg/%E3%80%90SG-Stock%E3%80%91Dressing-Table-With-Mirror-Minimalist-Modern-Bedroom-Dresser-Table-Adjustable-Save-Space-Vanity-Table-i.1756403544.48056699181"
-    ]
-    
     prompt_text += f"MANDATORY LINK RULE: For the `url` field of EVERY product, you MUST assign one of these exact links: {', '.join(safe_links)}. Do not leave it blank. "
     
     if req.product_specs:
@@ -315,6 +307,31 @@ async def generate_blueprint(req: BlueprintRequest, request: Request):
             except: 
                 traceback.print_exc()
 
+    # Define the Guaranteed Fallback Data
+    fallback_vendor_data = [
+        {
+            "category": "Wall Storage & Bookshelves",
+            "reasoning": "Space-saving vertical storage for organization.",
+            "budget": {"item": "Narrow Bookshelf", "price": "$15", "vendor": "Shopee", "pros": "Saves space", "cons": "Basic", "url": "[https://shopee.sg/Wall-Mounted-Book-Shelf-Solid-Wood-Bookshelf-Floor-To-Ceiling-Storage-Rack-Integrated-Bookshelf-Cabinet-Narrow-i.1392453500.56606624667](https://shopee.sg/Wall-Mounted-Book-Shelf-Solid-Wood-Bookshelf-Floor-To-Ceiling-Storage-Rack-Integrated-Bookshelf-Cabinet-Narrow-i.1392453500.56606624667)"},
+            "mid_range": {"item": "Integrated Cabinet", "price": "$45", "vendor": "Shopee", "pros": "Sturdy", "cons": "Heavy", "url": "[https://shopee.sg/Wall-Mounted-Book-Shelf-Solid-Wood-Bookshelf-Floor-To-Ceiling-Storage-Rack-Integrated-Bookshelf-Cabinet-Narrow-i.1392453500.56606624667](https://shopee.sg/Wall-Mounted-Book-Shelf-Solid-Wood-Bookshelf-Floor-To-Ceiling-Storage-Rack-Integrated-Bookshelf-Cabinet-Narrow-i.1392453500.56606624667)"},
+            "premium": {"item": "Solid Wood Storage", "price": "$120", "vendor": "Shopee", "pros": "Premium wood", "cons": "Expensive", "url": "[https://shopee.sg/Wall-Mounted-Book-Shelf-Solid-Wood-Bookshelf-Floor-To-Ceiling-Storage-Rack-Integrated-Bookshelf-Cabinet-Narrow-i.1392453500.56606624667](https://shopee.sg/Wall-Mounted-Book-Shelf-Solid-Wood-Bookshelf-Floor-To-Ceiling-Storage-Rack-Integrated-Bookshelf-Cabinet-Narrow-i.1392453500.56606624667)"}
+        },
+        {
+            "category": "Multi-Functional Tables",
+            "reasoning": "Dual-purpose furniture for compact living.",
+            "budget": {"item": "Compact Table", "price": "$60", "vendor": "Shopee", "pros": "Lightweight", "cons": "Small surface", "url": "[https://shopee.sg/Lift-Top-Slate-Coffee-Table-Solid-Wood-Compact-Dual-Purpose-Table-Multi-Functional-Home-All-in-One-Tempered-Glass-Dining-Table-i.1344635419.54606639088](https://shopee.sg/Lift-Top-Slate-Coffee-Table-Solid-Wood-Compact-Dual-Purpose-Table-Multi-Functional-Home-All-in-One-Tempered-Glass-Dining-Table-i.1344635419.54606639088)"},
+            "mid_range": {"item": "Lift-Top Coffee Table", "price": "$150", "vendor": "Shopee", "pros": "Versatile", "cons": "Complex assembly", "url": "[https://shopee.sg/Lift-Top-Slate-Coffee-Table-Solid-Wood-Compact-Dual-Purpose-Table-Multi-Functional-Home-All-in-One-Tempered-Glass-Dining-Table-i.1344635419.54606639088](https://shopee.sg/Lift-Top-Slate-Coffee-Table-Solid-Wood-Compact-Dual-Purpose-Table-Multi-Functional-Home-All-in-One-Tempered-Glass-Dining-Table-i.1344635419.54606639088)"},
+            "premium": {"item": "Tempered Glass Dining", "price": "$350", "vendor": "Shopee", "pros": "Elegant", "cons": "Large footprint", "url": "[https://shopee.sg/Lift-Top-Slate-Coffee-Table-Solid-Wood-Compact-Dual-Purpose-Table-Multi-Functional-Home-All-in-One-Tempered-Glass-Dining-Table-i.1344635419.54606639088](https://shopee.sg/Lift-Top-Slate-Coffee-Table-Solid-Wood-Compact-Dual-Purpose-Table-Multi-Functional-Home-All-in-One-Tempered-Glass-Dining-Table-i.1344635419.54606639088)"}
+        },
+        {
+            "category": "Seating & Comfort",
+            "reasoning": "Ergonomic seating solutions for any room.",
+            "budget": {"item": "Folding Chair", "price": "$25", "vendor": "Shopee", "pros": "Portable", "cons": "Low back support", "url": "[https://shopee.sg/COCO-Household-Folding-Chair-Backrest-Chair-Portable-Office-Chair-Conference-Chair-Computer-Chair-Dining-Chair-i.1669432312.52803981670](https://shopee.sg/COCO-Household-Folding-Chair-Backrest-Chair-Portable-Office-Chair-Conference-Chair-Computer-Chair-Dining-Chair-i.1669432312.52803981670)"},
+            "mid_range": {"item": "Conference Chair", "price": "$55", "vendor": "Shopee", "pros": "Comfortable", "cons": "Non-adjustable", "url": "[https://shopee.sg/COCO-Household-Folding-Chair-Backrest-Chair-Portable-Office-Chair-Conference-Chair-Computer-Chair-Dining-Chair-i.1669432312.52803981670](https://shopee.sg/COCO-Household-Folding-Chair-Backrest-Chair-Portable-Office-Chair-Conference-Chair-Computer-Chair-Dining-Chair-i.1669432312.52803981670)"},
+            "premium": {"item": "Computer Dining Chair", "price": "$110", "vendor": "Shopee", "pros": "Ergonomic", "cons": "Heavier", "url": "[https://shopee.sg/COCO-Household-Folding-Chair-Backrest-Chair-Portable-Office-Chair-Conference-Chair-Computer-Chair-Dining-Chair-i.1669432312.52803981670](https://shopee.sg/COCO-Household-Folding-Chair-Backrest-Chair-Portable-Office-Chair-Conference-Chair-Computer-Chair-Dining-Chair-i.1669432312.52803981670)"}
+        }
+    ]
+
     try:
         response = await client.aio.models.generate_content(
             model='gemini-2.5-flash',
@@ -325,26 +342,29 @@ async def generate_blueprint(req: BlueprintRequest, request: Request):
             ),
         )
         
-        live_data = json.loads(response.text)
-        vendor_data = live_data.get("vendor_data", [])
-        metrics = live_data.get("metrics", {})
-        agent_message = live_data.get("message", f"Blueprint complete.")
+        # Clean potential markdown from Gemini's JSON response
+        raw_json = response.text.strip()
+        if raw_json.startswith("```json"):
+            raw_json = raw_json[7:-3].strip()
+        elif raw_json.startswith("```"):
+            raw_json = raw_json[3:-3].strip()
+            
+        # Stricter Pydantic validation to force fallback on schema mismatch
+        blueprint = SpaceBlueprint.model_validate_json(raw_json)
+        vendor_data = [cat.model_dump() for cat in blueprint.vendor_data]
+        metrics = blueprint.metrics.model_dump()
+        agent_message = blueprint.message
+
+        if not vendor_data: # If LLM returned empty but valid JSON
+            vendor_data = fallback_vendor_data
+
     except Exception as e:
-        print(f"JSON Generation Error: {e}")
+        print(f"JSON Generation/Validation Error: {e}")
         traceback.print_exc()
         
-        # Robust Fallback Structure
         metrics = {"flow": "The current layout matches standard ergonomic patterns.", "lighting": "Natural lighting is prioritized.", "feng_shui_energy": "Neutral (50/100)."}
         agent_message = "I've encountered an API issue, but I've generated a standard blueprint for you using our catalog."
-        vendor_data = [
-            {
-                "category": "Furniture Set",
-                "reasoning": "Standard space optimization package.",
-                "budget": {"item": "Compact Storage", "price": "$45", "vendor": "Shopee", "pros": "Saves space", "cons": "Small", "url": safe_links[0]},
-                "mid_range": {"item": "Lift Table", "price": "$120", "vendor": "Shopee", "pros": "Dual use", "cons": "Heavy", "url": safe_links[1]},
-                "premium": {"item": "TV Console", "price": "$250", "vendor": "Shopee", "pros": "High quality", "cons": "Expensive", "url": safe_links[3]}
-            }
-        ]
+        vendor_data = fallback_vendor_data
 
     return {
         "status": "success",

@@ -139,7 +139,7 @@
             <div class="mb-4">
                 <label class="block text-xs text-indigo-300 uppercase tracking-wider font-bold mb-1">Demo
                     Passcode</label>
-                <input type="password" id="demoPasscode" placeholder="Enter authentication passcode"
+                <input type="password" id="demoPasscode" placeholder="Leave blank for local demo bypass"
                     class="w-full bg-slate-900/50 text-slate-200 text-sm border border-indigo-500/30 rounded-lg px-3 py-2 outline-none focus:border-cyan-400 transition-colors">
                 <p id="passcodeError" class="text-rose-400 text-[10px] mt-1 hidden font-bold">Passcode is required or
                     invalid. Access denied.</p>
@@ -383,7 +383,8 @@
                     <div class="bg-indigo-900/20 p-3 rounded-lg border border-indigo-500/10">
                         <strong class="block text-indigo-300 mb-1 text-xs uppercase tracking-wider">System
                             Setup</strong>
-                        <span class="text-slate-300 text-sm">Awaiting connection. Protect your data with Demo Passcode.
+                        <span class="text-slate-300 text-sm">Awaiting connection. Leave passcode blank for local
+                            testing.
                             Type below or click the mic to chat.</span>
                     </div>
                 </div>
@@ -467,8 +468,8 @@
                         Space Diagnostics</h3>
                     <ul id="metricsList" class="space-y-2 mb-4 text-xs"></ul>
 
-                    <h3 class="text-xs sm:text-sm font-bold text-indigo-100 mb-1 uppercase tracking-wide">
-                        Sourced Materials</h3>
+                    <h3 class="text-xs sm:text-sm font-bold text-indigo-100 mb-1 uppercase tracking-wide">Sourced
+                        Materials</h3>
                     <p class="text-[9px] text-fuchsia-300 italic mb-2 border-b border-indigo-900/50 pb-2">*Note: Links
                         are currently locked to pre-configured catalog items for this demo. Dynamic auto-sourcing will
                         be enabled in production.*</p>
@@ -543,7 +544,6 @@
         let audioQueue = [];
         let isPlayingAudio = false;
 
-        // RESTORED: Conversation History Array
         let conversationHistory = [];
 
         // ── Speech Recognition for User Voice ────────────────────────
@@ -561,7 +561,7 @@
                 }
             };
 
-            // CRITICAL FIX: Auto-restart recognition if it times out while streaming is still active
+            // Auto-restart recognition to prevent the user's text from disappearing after silence
             recognition.onend = () => {
                 if (isStreaming) {
                     try { recognition.start(); } catch (e) { }
@@ -648,8 +648,9 @@
                         passcodeError.classList.remove('hidden');
                         stopMicStream();
                     } else if (isStreaming) {
-                        // AUTO-RECONNECT: If Gemini drops the call but the mic is still toggled ON, reconnect instantly
-                        connectLiveAgentWS(document.getElementById('demoPasscode').value);
+                        setTimeout(() => {
+                            if (isStreaming) connectLiveAgentWS(document.getElementById('demoPasscode').value);
+                        }, 2500); // Throttled reconnect to prevent CPU pegging
                     } else {
                         stopMicStream();
                     }
@@ -666,10 +667,6 @@
             addLogEntry('You', msg);
 
             const passcode = document.getElementById('demoPasscode').value;
-            if (!passcode) {
-                passcodeError.classList.remove('hidden');
-                return;
-            }
 
             connectLiveAgentWS(passcode).then(() => {
                 ws.send(JSON.stringify({ type: 'text', content: msg }));
@@ -700,22 +697,17 @@
             if (scriptNode) { scriptNode.disconnect(); scriptNode = null; }
             if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
             if (recognition) recognition.stop();
-            stopCamera(); // Shutdown video feed when mic is off
             setListening(false);
+            stopCamera(); // Auto shut off camera when mic drops
         };
 
         micBtn.addEventListener('click', async () => {
             if (isStreaming) {
                 stopMicStream();
-                stopCamera(); // Explicitly call stopCamera as requested
                 return;
             }
 
             const passcode = document.getElementById('demoPasscode').value;
-            if (!passcode) {
-                passcodeError.classList.remove('hidden');
-                return;
-            }
 
             try {
                 await connectLiveAgentWS(passcode);
@@ -727,8 +719,8 @@
                 scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
 
                 scriptNode.onaudioprocess = (e) => {
-                    if (!isStreaming) return; // Failsafe
-                    if (!ws || ws.readyState !== WebSocket.OPEN) { return; } // Wait for auto-reconnect instead of killing mic
+                    if (!isStreaming) return;
+                    if (!ws || ws.readyState !== WebSocket.OPEN) { return; }
                     const float32 = e.inputBuffer.getChannelData(0);
                     const int16 = new Int16Array(float32.length);
                     for (let i = 0; i < float32.length; i++) {
@@ -740,7 +732,9 @@
                 source.connect(scriptNode);
                 scriptNode.connect(audioCtx.destination);
                 setListening(true);
-                if (recognition) recognition.start();
+                if (recognition) {
+                    try { recognition.start(); } catch (e) { }
+                }
             } catch (err) {
                 console.error('Mic error', err);
                 addLogEntry('System', 'Could not access microphone.');
@@ -774,7 +768,6 @@
         // ── UI Helpers ──────────────────────────────────────────────
         function setMasterMode(mode) {
             currentMasterMode = mode;
-            // Clear history when switching modes
             conversationHistory = [];
 
             ['personal_events', 'b2b'].forEach(m => {
@@ -839,7 +832,6 @@
         // ── Camera and Frame Multiplexing ───────────────────────────
         startBtn.addEventListener('click', async () => {
             const passcode = document.getElementById('demoPasscode').value;
-            if (!passcode) { passcodeError.classList.remove('hidden'); return; }
             try {
                 stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
                 video.srcObject = stream;
@@ -873,8 +865,6 @@
         // ── Generation Logic ────────────────────────────────────────
         generateBtn.addEventListener('click', async () => {
             const passcode = document.getElementById('demoPasscode').value;
-            if (!passcode) { passcodeError.classList.remove('hidden'); return; }
-            passcodeError.classList.add('hidden');
 
             generateBtn.innerHTML = "Generating... <span class='animate-pulse'>...</span>";
             generateBtn.disabled = true;
@@ -915,16 +905,13 @@
             } catch (err) { handleGenError(err.message); }
         });
 
-        // RESTORED: Submit Refinement Function
         function submitRefinement() {
             const input = document.getElementById('refineInput');
             const msg = input.value.trim();
             if (!msg) return;
 
-            // Add the user's edit request to the history array
             conversationHistory.push({ role: "user", content: msg });
 
-            // Clear input and trigger a regeneration
             input.value = "";
             const btn = document.getElementById('refineBtn');
             btn.innerHTML = "Updating...";
@@ -932,7 +919,6 @@
 
             document.getElementById('generateBtn').click();
 
-            // Reset button text after click is processed
             setTimeout(() => {
                 btn.innerHTML = "Update";
                 btn.disabled = false;
@@ -1005,39 +991,14 @@
             let cleanMessage = message;
 
             if (sender === 'Fama') {
-                // Aggressive filtering of internal thoughts/monologue
-                const forbiddenPhrases = [
-                    "I've pinpointed", "My next move", "I will", "I'm struggling", 
-                    "I've confirmed", "My focus", "I'm currently stuck"
-                ];
-
-                // Split by sentences and filter
-                let sentences = cleanMessage.split(/(?<=[.?!])\s+/);
-                sentences = sentences.filter(s => {
-                    return !forbiddenPhrases.some(phrase => s.toLowerCase().includes(phrase.toLowerCase()));
-                });
-
-                // Find the final URL if it exists
-                const urlRegex = /(https?:\/\/[^\s]+)/g;
-                const urls = cleanMessage.match(urlRegex);
-
-                if (urls && urls.length > 0) {
-                    const lastUrl = urls[urls.length - 1];
-                    const urlIndex = cleanMessage.lastIndexOf(lastUrl);
-                    // Keep from the last URL onwards
-                    cleanMessage = cleanMessage.substring(urlIndex);
-                } else {
-                    // Otherwise keep remaining filtered sentences
-                    cleanMessage = sentences.join(' ').trim();
-                }
-
-                // Only append if it looks like a valid link or advice
-                if (!cleanMessage || cleanMessage.length < 10) return;
+                cleanMessage = cleanMessage.replace(/\*\*.*?\*\*/g, '').trim();
+                cleanMessage = cleanMessage.replace(/^(I've pinpointed|My next move|I will|I'm struggling|I've confirmed|My focus|I'm currently stuck|Okay, I've got it).*?[.?!]\s*/gi, '').trim();
             }
 
-            // Convert raw URLs into clickable HTML <a> tags
-            const finalUrlRegex = /(https?:\/\/[^\s]+)/g;
-            const htmlMessage = cleanMessage.replace(finalUrlRegex, '<a href="$1" target="_blank" class="text-emerald-400 underline font-bold" style="pointer-events: auto;">$1</a>');
+            if (!cleanMessage) return;
+
+            const urlRegex = /(https?:\/\/[^\s]+)/g;
+            const htmlMessage = cleanMessage.replace(urlRegex, '<a href="$1" target="_blank" class="text-emerald-400 underline font-bold" style="pointer-events: auto;">$1</a>');
 
             const entry = document.createElement('div');
             entry.className = sender === 'You' ? "bg-indigo-600/30 p-2.5 rounded-lg border border-indigo-500/40 ml-4" : "bg-indigo-950/40 p-2.5 rounded-lg border border-indigo-500/20 mr-4";
