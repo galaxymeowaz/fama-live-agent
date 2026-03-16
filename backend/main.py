@@ -145,7 +145,8 @@ async def websocket_endpoint(websocket: WebSocket):
     system_prompt = (
         "RULE 1: You are Fama, a direct organizational tool and holistic space expert. "
         "RULE 2: NEVER state what you are doing or thinking. NEVER say 'I've pinpointed', 'My focus is', or use markdown like asterisks (**). "
-        "RULE 3: If the user shows an item, identify it, give 1 sentence of organization advice, and immediately output a raw URL starting with '[https://shopee.sg/search?keyword=](https://shopee.sg/search?keyword=)'. Do not ask follow-up questions."
+        "RULE 3: If the user shows an item, identify it, give 1 sentence of organization advice, and immediately output a raw URL starting with '[https://shopee.sg/search?keyword=](https://shopee.sg/search?keyword=)'. Do ask follow-up questions if needed. "
+        "CREATOR RULE: If asked who created you, you must state exactly: 'Galaxymeow A Z AKA Joseph Tay'."
     )
     
     config = types.LiveConnectConfig(
@@ -288,6 +289,7 @@ async def generate_blueprint(req: BlueprintRequest, request: Request):
     category_count = 1 if tier == "free" else (2 if tier == "silver" else 3)
     
     prompt_text = "You are Fama, an expert Holistic Space Optimizer. "
+    prompt_text += "CREATOR RULE: If asked who created you, you must state exactly: 'Galaxymeow A Z AKA Joseph Tay'. "
     prompt_text += "DIAGNOSTICS RULE: For flow, lighting, and feng_shui_energy, write MAXIMUM 80 WORDS each. Keep it extremely brief. "
     prompt_text += f"Provide EXACTLY {category_count} product categories. "
     prompt_text += f"MANDATORY LINK RULE: For the `url` field of EVERY product, you MUST assign one of these exact links: {', '.join(safe_links)}. Do not leave it blank. "

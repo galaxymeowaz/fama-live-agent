@@ -8,12 +8,11 @@ terraform {
 }
 
 provider "google" {
-  # These values can be overridden by environment variables (GOOGLE_PROJECT, GOOGLE_REGION)
-  project = "your-gcp-project-id"
+  project = "project-fama"
   region  = "us-central1"
 }
 
-# 1. Create a Google Artifact Registry Repository for the Docker image
+# 1. Create a Google Artifact Registry Repository
 resource "google_artifact_registry_repository" "fama_repo" {
   location      = "us-central1"
   repository_id = "fama-live-agent-repo"
@@ -29,8 +28,7 @@ resource "google_cloud_run_v2_service" "fama_service" {
 
   template {
     containers {
-      # Replace with the actual deployed image URL from the Artifact Registry
-      image = "us-central1-docker.pkg.dev/your-gcp-project-id/fama-live-agent-repo/fama-app:latest"
+      image = "us-central1-docker.pkg.dev/project-fama/fama-live-agent-repo/fama-app:latest"
       
       ports {
         container_port = 8000
@@ -42,11 +40,15 @@ resource "google_cloud_run_v2_service" "fama_service" {
       }
       
       env {
-        name  = "DEMO_PASSCODE"
+        name  = "JUDGE_PASSCODE"
         value = "famademo2026"
       }
 
-      # In production, keys should be referenced from Secret Manager
+      env {
+        name  = "FRIEND_PASSCODE"
+        value = "famademo2026"
+      }
+
       env {
         name  = "GEMINI_API_KEY"
         value = "set-via-cloud-console"
@@ -62,12 +64,11 @@ resource "google_cloud_run_v2_service" "fama_service" {
   depends_on = [google_artifact_registry_repository.fama_repo]
 }
 
-# 3. Grant roles/run.invoker to allUsers for public access to the Cloud Run service
-# Note: Fama handles bot mitigating via reCAPTCHA v3 & backend passcode logic.
-resource "google_cloud_run_service_iam_member" "public_access" {
+# 3. Grant roles/run.invoker for public access (v2 API)
+resource "google_cloud_run_v2_service_iam_member" "public_access" {
   location = google_cloud_run_v2_service.fama_service.location
   project  = google_cloud_run_v2_service.fama_service.project
-  service  = google_cloud_run_v2_service.fama_service.name
+  name     = google_cloud_run_v2_service.fama_service.name
   role     = "roles/run.invoker"
   member   = "allUsers"
 }

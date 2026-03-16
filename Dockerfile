@@ -27,5 +27,5 @@ COPY frontend/ ./frontend/
 EXPOSE 8000
 
 # Start the FastAPI Uvicorn server
-# Using uvicorn to run the backend correctly in production
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Bind to the dynamic $PORT injected by Google Cloud Run
+CMD sh -c "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}"

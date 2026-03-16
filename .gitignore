@@ -41,3 +41,5 @@ build/
 *.tfstate.backup
 .terraform/
 .terraform.lock.hcl
+
+*.json
