@@ -8,7 +8,7 @@ terraform {
 }
 
 provider "google" {
-  project = "project-fama"
+  project = "fama-terraform"
   region  = "us-central1"
 }
 
@@ -28,27 +28,8 @@ resource "google_cloud_run_v2_service" "fama_service" {
 
   template {
     containers {
-      image = "us-central1-docker.pkg.dev/project-fama/fama-live-agent-repo/fama-app:latest"
+      image = "us-central1-docker.pkg.dev/fama-terraform/fama-live-agent-repo/fama-app:latest"
       
-      ports {
-        container_port = 8000
-      }
-
-      env {
-        name  = "PORT"
-        value = "8000"
-      }
-      
-      env {
-        name  = "JUDGE_PASSCODE"
-        value = "famademo2026"
-      }
-
-      env {
-        name  = "FRIEND_PASSCODE"
-        value = "famademo2026"
-      }
-
       env {
         name  = "GEMINI_API_KEY"
         value = "set-via-cloud-console"
@@ -62,13 +43,4 @@ resource "google_cloud_run_v2_service" "fama_service" {
   }
 
   depends_on = [google_artifact_registry_repository.fama_repo]
-}
-
-# 3. Grant roles/run.invoker for public access (v2 API)
-resource "google_cloud_run_v2_service_iam_member" "public_access" {
-  location = google_cloud_run_v2_service.fama_service.location
-  project  = google_cloud_run_v2_service.fama_service.project
-  name     = google_cloud_run_v2_service.fama_service.name
-  role     = "roles/run.invoker"
-  member   = "allUsers"
 }
